@@ -443,8 +443,7 @@ builtin.module() {
 #eval! testBench "add-zero-forwards" 10
 
 /--
-info:
-builtin.module() {
+info: builtin.module() {
   ^2:
     %3 = arith.constant 42 ⏎
     %34 = arith.addi(%3, %3)
