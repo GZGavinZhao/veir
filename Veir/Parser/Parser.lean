@@ -27,6 +27,12 @@ def ParserState.fromInput (input : ByteArray) : Except String ParserState := do
 def ParserState.pos (state : ParserState) : Nat :=
   state.lexer.pos
 
+/--
+  Get the input being parsed.
+-/
+def ParserState.input (state : ParserState) : ByteArray :=
+  state.lexer.input
+
 /-
   Generic methods for parsing.
 -/
@@ -63,6 +69,12 @@ private def parseToken (tokType : TokenKind) (errorMsg : String) : m Token := do
   match ← parseOptionalToken tokType with
   | some token => return token
   | none => throw errorMsg
+
+/--
+  Peek at the current token without consuming it.
+-/
+private def peekToken : m Token := do
+  return (←get).currentToken
 
 /--
   Check if the given string is a punctuation token.
@@ -117,6 +129,105 @@ def parsePunctuation (c : String) (h : (isPunctuation c).isSome := by grind) : m
   match ← parseOptionalPunctuation c with
   | true => return ()
   | false => throw s!"Expected punctuation '{c}'"
+
+/--
+  Parse optionally an identifier with grammar rule `(letter|[_]) (letter|digit|[_$.])*`.
+  If the next token is an identifier, consume it and return its string slice.
+  Otherwise, return none.
+-/
+def parseOptionalIdentifier : m (Option ByteArray) := do
+  match ← parseOptionalToken .bareIdent with
+  | some token => return some (token.slice.of ((← get).input))
+  | none => return none
+
+/--
+  Parse an identifier with grammar rule `(letter|[_]) (letter|digit|[_$.])*`.
+  Raise an error if the next token is not an identifier.
+-/
+def parseIdentifier (errorMsg : String := "identifier expected") : m ByteArray := do
+  match ← parseOptionalIdentifier with
+  | some ident => return ident
+  | none => throw errorMsg
+
+/--
+  Parse a boolean with grammar rule `true | false`, if present.
+  If the next token is a boolean, consume it and return its value.
+  Otherwise, return none.
+-/
+def parseOptionalBoolean : m (Option Bool) := do
+  match ← peekToken with
+  | {kind := .bareIdent, slice := slice} =>
+    let ident := slice.of ((← get).input)
+    if ident == "true".toByteArray then
+      let _ ← consumeToken
+      return some true
+    else if ident == "false".toByteArray then
+      let _ ← consumeToken
+      return some false
+    else
+      return none
+  | _ => return none
+
+/--
+  Parse a boolean with grammar rule `true | false`.
+  Raise an error if the next token is not a boolean.
+-/
+def parseBoolean (errorMsg : String := "boolean expected") : m Bool := do
+  match ← parseOptionalBoolean with
+  | some b => return b
+  | none => throw errorMsg
+
+/--
+  Parse an integer literal, if present.
+  The integer can either be in decimal form, hexadecimal form.
+  Optionally, allow a leading `-` sign.
+  Optionally, allow parsing `true` or `false` as `1` or `0`, respectively.
+-/
+def parseOptionalInteger (allowBoolean : Bool) (allowNegative : Bool) : m (Option Int) := do
+  -- First try to parse a boolean if allowed
+  if allowBoolean then
+    let boolean ← parseOptionalBoolean
+    if let some b := boolean then
+      return some (if b then 1 else 0)
+
+  -- Parse optional leading '-'
+  let mut isNegative := false
+  if allowNegative then
+    isNegative := Option.isSome (← parseOptionalToken .minus)
+
+  -- Parse the actual integer literal
+  let intToken ← parseOptionalToken .intLit
+  if intToken = none && isNegative then
+    throw "expected integer literal after '-'"
+
+  -- Convert the integer literal token to an Int
+  if let some intToken := intToken then
+    let slice := intToken.slice.of ((← get).input)
+    let value :=
+      if ∃ (_: slice.size > 2), slice[1] == 'x'.toUInt8 || slice[1] == 'X'.toUInt8 then
+        slice.hexToNat?
+      else
+        (String.fromUTF8? slice).bind String.toNat?
+    if let some value := value then
+      if isNegative then
+        return some (Int.negOfNat value)
+      else
+        return some (Int.ofNat value)
+    else
+      throw s!"internal error: failed converting '{intToken.slice.of ((← get).input)}' to an integer literal"
+  else
+    return none
+
+/--
+  Parse an integer literal.
+  The integer can either be in decimal form, hexadecimal form.
+  Optionally, allow a leading `-` sign.
+  Optionally, allow parsing `true` or `false` as `1` or `0`, respectively.
+-/
+def parseInteger (allowBoolean : Bool) (allowNegative : Bool) (errorMsg : String := "integer expected") : m Int := do
+  match ← parseOptionalInteger allowBoolean allowNegative with
+  | some i => return i
+  | none => throw errorMsg
 
 end ParserStateMethods
 
