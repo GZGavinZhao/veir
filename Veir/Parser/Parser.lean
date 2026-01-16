@@ -127,10 +127,10 @@ def parseOptionalPunctuation (c : String) (h : (isPunctuation c).isSome := by gr
   The available punctuation symbols are `->`, `...`, `:`, `,`, `=`, `>`, `{`, `(`,
   `[`, `<`, `-`, `+`, `?`, `}`, `)`, `]`, `*`, and `|`.
 -/
-def parsePunctuation (c : String) (h : (isPunctuation c).isSome := by grind) : M Unit := do
+def parsePunctuation (c : String) (errorMsg : String := s!"Expected punctuation '{c}'") (h : (isPunctuation c).isSome := by grind) : M Unit := do
   match ← parseOptionalPunctuation c with
   | true => return ()
-  | false => throw s!"Expected punctuation '{c}'"
+  | false => throw errorMsg
 
 /--
   Parse optionally an identifier with grammar rule `(letter|[_]) (letter|digit|[_$.])*`.
@@ -276,6 +276,92 @@ def parseInteger (allowBoolean : Bool) (allowNegative : Bool) (errorMsg : String
   match ← parseOptionalInteger allowBoolean allowNegative with
   | some i => return i
   | none => throw errorMsg
+
+/--
+  Delimiters that are supported when parsing lists.
+-/
+inductive Delimiter
+  /-- Parentheses `(` and `)` -/
+  | paren
+  /-- Less-than and greater-than signs `<` and `>` -/
+  | angle
+  /-- Square brackets `[` and `]` -/
+  | square
+  /-- Curly braces `{` and `}` -/
+  | braces
+
+def Delimiter.leftSymbol : Delimiter → String
+  | paren => "("
+  | angle => "<"
+  | square => "["
+  | braces => "{"
+
+@[grind =]
+theorem Delimiter.leftSymbol_isPunctuation (d : Delimiter) : (isPunctuation (d.leftSymbol)).isSome := by
+  simp only [Delimiter.leftSymbol]
+  grind
+
+def Delimiter.rightSymbol : Delimiter → String
+  | paren => ")"
+  | angle => ">"
+  | square => "]"
+  | braces => "}"
+
+@[grind =]
+theorem Delimiter.rightSymbol_isPunctuation (d : Delimiter) : (isPunctuation (d.rightSymbol)).isSome := by
+  simp only [Delimiter.rightSymbol]
+  grind
+
+/--
+  Parse a non-empty comma-separated list of items.
+  Return an error if no items are present.
+-/
+def parseList (parseItem : M α) : M (Array α) := do
+  let mut items : Array α := #[]
+  items := items.push (← parseItem)
+  while ← parseOptionalPunctuation "," do
+    let item ← parseItem
+    items := items.push item
+  return items
+
+/--
+  Parse a comma-separated list of items enclosed in the given delimiters.
+  If the left delimiter is not present, return an empty list.
+-/
+def parseOptionalDelimitedList (delimiter : Delimiter) (parseItem : M α) : M (Array α) := do
+  /- Parse the left delimiter. -/
+  if ! (← parseOptionalPunctuation delimiter.leftSymbol) then
+    return #[]
+
+  /- Check for empty list. -/
+  if ← parseOptionalPunctuation delimiter.rightSymbol then
+    return #[]
+
+  /- Parse the non-empty list. -/
+  let items ← parseList parseItem
+
+  /- Parse the right delimiter. -/
+  parsePunctuation delimiter.rightSymbol ("closing delimiter '" ++ delimiter.rightSymbol ++ "' expected")
+  return items
+
+/--
+  Parse a comma-separated list of items enclosed in the given delimiters.
+  Return an error if the left delimiter is not present.
+-/
+def parseDelimitedList (delimiter : Delimiter) (parseItem : M α) : M (Array α) := do
+  /- Parse the left delimiter. -/
+  parsePunctuation delimiter.leftSymbol ("opening delimiter '" ++ delimiter.leftSymbol ++ "' expected")
+
+  /- Check for empty list. -/
+  if ← parseOptionalPunctuation delimiter.rightSymbol then
+    return #[]
+
+  /- Parse the non-empty list. -/
+  let items ← parseList parseItem
+
+  /- Parse the right delimiter. -/
+  parsePunctuation delimiter.rightSymbol ("closing delimiter '" ++ delimiter.rightSymbol ++ "' expected")
+  return items
 
 end ParserStateMethods
 

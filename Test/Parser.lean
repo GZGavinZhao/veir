@@ -232,3 +232,81 @@ section parseStringLiteral
 #eval testParser "\"hello world!\"" parseOptionalStringLiteral
 
 end parseStringLiteral
+
+section parseList
+
+/-! # Test different delimiters. -/
+
+/--
+  info: "Success: #[1, 2, 3]"
+-/
+#guard_msgs in
+#eval testParser "(1, 2, 3)" (parseDelimitedList .paren (parseInteger false false))
+
+/--
+  info: "Success: #[1, 2, 3]"
+-/
+#guard_msgs in
+#eval testParser "[1, 2, 3]" (parseDelimitedList .square (parseInteger false false))
+
+/--
+  info: "Success: #[1, 2, 3]"
+-/
+#guard_msgs in
+#eval testParser "{1, 2, 3}" (parseDelimitedList .braces (parseInteger false false))
+
+/--
+  info: "Success: #[1, 2, 3]"
+-/
+#guard_msgs in
+#eval testParser "<1, 2, 3>" (parseDelimitedList .angle (parseInteger false false))
+
+/-! # Test some error cases. -/
+
+/--
+  info: "Error: closing delimiter ')' expected"
+-/
+#guard_msgs in
+#eval testParser "(1, 2, 3" (parseDelimitedList .paren (parseInteger false false))
+
+/--
+  info: "Error: integer expected"
+-/
+#guard_msgs in
+#eval testParser "(1, 2, " (parseDelimitedList .paren (parseInteger false false))
+
+/--
+  info: "Error: integer expected"
+-/
+#guard_msgs in
+#eval testParser "(1, 2, )" (parseDelimitedList .paren (parseInteger false false))
+
+/-! # Test empty list. -/
+
+/--
+  info: "Success: #[]"
+-/
+#guard_msgs in
+#eval testParser "()" (parseDelimitedList .paren (parseInteger false false))
+
+/--
+  info: "Success: #[]"
+-/
+#guard_msgs in
+#eval testParser "" (parseOptionalDelimitedList .paren (parseInteger false false))
+
+/-! # Test no delimiter and optional delimiter cases. -/
+
+/--
+  info: "Success: #[3, 2]"
+-/
+#guard_msgs in
+#eval testParser "3, 2" (parseList (parseInteger false false))
+
+/--
+  info: "Success: #[3, 2]"
+-/
+#guard_msgs in
+#eval testParser "(3, 2)" (parseOptionalDelimitedList .paren (parseInteger false false))
+
+end parseList
