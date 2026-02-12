@@ -1,5 +1,7 @@
 module
 
+public import Veir.ForLean
+
 /-!
   # Attributes
 
@@ -43,16 +45,84 @@ structure UnregisteredAttr where
   isType : Bool
 deriving Inhabited, Repr, DecidableEq, Hashable
 
+mutual
+
+/--
+  The signature of a function, consisting of an array of input attributes
+  and an array of output attributes.
+-/
+structure FunctionType where
+  inputs : Array Attribute
+  outputs : Array Attribute
+deriving Inhabited, Repr, Hashable
+
 /--
   A data structure that represents compile-time information in the IR.
   Attributes are used either as type annotations for SSA values, or
   as extra information stored in operations.
 -/
 inductive Attribute
+/-- Integer type -/
 | integerType (type : IntegerType)
+/-- Function type -/
+| functionType (type : FunctionType)
 /-- An attribute from an unknown dialect. -/
 | unregisteredAttr (attr : UnregisteredAttr)
-deriving Inhabited, Repr, DecidableEq, Hashable
+deriving Inhabited, Repr, Hashable
+
+end
+
+theorem FunctionType.sizeOf_elems_inputs {ft : FunctionType} (hx : x ∈ ft.inputs) :
+    sizeOf x < sizeOf ft := by
+  grind [Array.sizeOf_lt_of_mem hx, cases FunctionType]
+
+theorem FunctionType.sizeOf_elems_outputs {ft : FunctionType} (hx : x ∈ ft.outputs) :
+    sizeOf x < sizeOf ft := by
+  grind [Array.sizeOf_lt_of_mem hx, cases FunctionType]
+
+/-!
+  ## DecidableEq instances
+-/
+
+mutual
+def FunctionType.decEq (type1 type2 : FunctionType) : Decidable (type1 = type2) :=
+  let inputs1 := type1.inputs
+  let outputs1 := type1.outputs
+  let inputs2 := type2.inputs
+  let outputs2 := type2.outputs
+  match Array.instDecidabelEq' inputs1 inputs2 (fun x y _ _ => Attribute.decEq x y) with
+  | isTrue _ =>
+    match Array.instDecidabelEq' outputs1 outputs2 (fun x y _ _ => Attribute.decEq x y) with
+    | isTrue _ => isTrue (by grind [cases FunctionType])
+    | isFalse _ => isFalse (by grind)
+  | isFalse _ => isFalse (by grind)
+termination_by sizeOf type1
+decreasing_by
+  · have := @FunctionType.sizeOf_elems_inputs
+    grind
+  · have := @FunctionType.sizeOf_elems_outputs
+    grind
+
+def Attribute.decEq (attr1 attr2 : Attribute) : Decidable (attr1 = attr2) := by
+  cases h1 : attr1 <;> cases h2 : attr2
+  case integerType.integerType type1 type2 =>
+    exact (match decEq type1 type2 with
+      | isTrue hEq => isTrue (by grind)
+      | isFalse hEq => isFalse (by grind))
+  case unregisteredAttr.unregisteredAttr attr1 attr2 =>
+    exact (match decEq attr1 attr2 with
+      | isTrue hEq => isTrue (by grind)
+      | isFalse hEq => isFalse (by grind))
+  case functionType.functionType type1 type2 =>
+    exact (match FunctionType.decEq type1 type2 with
+      | isTrue hEq => isTrue (by grind)
+      | isFalse hEq => isFalse (by grind))
+  all_goals exact isFalse (by grind)
+termination_by sizeOf attr1
+end
+
+instance : DecidableEq Attribute := Attribute.decEq
+instance : DecidableEq FunctionType := FunctionType.decEq
 
 /-!
   ## ToString implementation
@@ -67,18 +137,47 @@ instance : ToString IntegerType where
 instance : ToString UnregisteredAttr where
   toString attr := attr.value
 
-namespace Attribute
+mutual
+
+def FunctionType.toString (type : FunctionType) : String :=
+  let inputs := String.intercalate ", " (type.inputs.toList.map Attribute.toString)
+  let outputs := match _: type.outputs.size with
+  | 0 => "()"
+  | 1 =>
+    match _: type.outputs[0] with
+    | .functionType _ => s!"({type.outputs[0].toString})"
+    | output => output.toString
+  | _ =>
+    s!"({String.intercalate ", " (type.outputs.toList.map Attribute.toString)})"
+  s!"({inputs}) -> {outputs}"
+termination_by sizeOf type
+decreasing_by
+  · apply FunctionType.sizeOf_elems_inputs
+    grind
+  · apply FunctionType.sizeOf_elems_outputs
+    grind
+  · apply FunctionType.sizeOf_elems_outputs
+    grind
+  · apply FunctionType.sizeOf_elems_outputs
+    grind
 
 /--
   Convert an attribute to a string representation.
 -/
-def toString (attr : Attribute) : String :=
+def Attribute.toString (attr : Attribute) : String :=
   match attr with
   | .integerType type => ToString.toString type
   | .unregisteredAttr attr => ToString.toString attr
+  | .functionType type => type.toString
+termination_by sizeOf attr
+
+end
 
 instance : ToString Attribute where
-  toString := toString
+  toString := Attribute.toString
+
+instance : ToString FunctionType where
+  toString := FunctionType.toString
 
 /-!
   ## Coercion instances to Attribute
@@ -91,7 +190,8 @@ instance : Coe IntegerType Attribute where
 instance : Coe UnregisteredAttr Attribute where
   coe attr := .unregisteredAttr attr
 
-end Attribute
+instance : Coe FunctionType Attribute where
+  coe type := .functionType type
 
 /-!
   ## TypeAttr definition
@@ -110,12 +210,15 @@ def isType (attr : Attribute) : Bool :=
   match attr with
   | .integerType _ => true
   | .unregisteredAttr attr => attr.isType
+  | .functionType _ => true
 
 @[simp, grind =]
 theorem isType_integerType type : (integerType type).isType = true := by rfl
 @[simp, grind =]
 theorem isType_unregistered unregistered :
   (unregisteredAttr unregistered).isType = unregistered.isType := by rfl
+@[simp, grind =]
+theorem isType_functionType type : (functionType type).isType = true := by rfl
 
 end Attribute
 
@@ -150,6 +253,9 @@ def Attribute.asType (attr : Attribute) (isType : attr.isType := by grind) : Typ
 
 instance : Coe IntegerType TypeAttr where
   coe type := ⟨.integerType type, by rfl⟩
+
+instance : Coe FunctionType TypeAttr where
+  coe type := ⟨.functionType type, by rfl⟩
 
 end
 end Veir
