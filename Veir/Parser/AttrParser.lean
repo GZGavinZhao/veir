@@ -248,6 +248,43 @@ partial def parseType (errorMsg : String := "type expected") : AttrParserM TypeA
   | none => throw errorMsg
 
 /--
+  Parse an entry in an attribute dictionary, which has the form `name = value`
+  or the shorthand `name` (equivalent to `name = unit`).
+-/
+partial def parseAttributeDictionaryEntry : AttrParserM (ByteArray × Attribute) := do
+  let name ← parseIdentifierOrStringLiteral
+  if ← parseOptionalPunctuation "=" then
+    let value ← parseAttribute
+    return (name, value)
+  else
+    return (name, UnitAttr.mk)
+
+/--
+  Parse an attribute dictionary, if present.
+-/
+partial def parseOptionalAttributeDictionary :
+    AttrParserM (Option (Array (ByteArray × Attribute))) := do
+  parseOptionalDelimitedList .braces parseAttributeDictionaryEntry
+
+/--
+  Parse an attribute dictionary, throwing an error if it is not present.
+-/
+partial def parseAttributeDictionary (errorMsg : String := "attribute dictionary expected") :
+    AttrParserM (Array (ByteArray × Attribute)) := do
+  match ← parseOptionalAttributeDictionary with
+  | some dict => return dict
+  | none => throw errorMsg
+
+/--
+  Parse a dictionary attribute, if present.
+  A dictionary attribute has the form `{key = value, key2 = value2, ...}`.
+-/
+partial def parseOptionalDictionaryAttr : AttrParserM (Option DictionaryAttr) := do
+  let some entries ← parseOptionalDelimitedList .braces parseAttributeDictionaryEntry
+    | return none
+  return some (DictionaryAttr.fromArray entries)
+
+/--
   Parse an attribute, if present.
 -/
 partial def parseOptionalAttribute : AttrParserM (Option Attribute) := do
@@ -261,6 +298,8 @@ partial def parseOptionalAttribute : AttrParserM (Option Attribute) := do
     return some stringAttr
   else if let some unitAttr ← parseOptionalUnitAttr then
     return some unitAttr
+  else if let some dictAttr ← parseOptionalDictionaryAttr then
+    return some dictAttr
   else
     return none
 
@@ -274,34 +313,5 @@ partial def parseAttribute (errorMsg : String := "attribute expected") :
   | none => throw errorMsg
 
 end
-
-/--
-  Parse an entry in an attribute dictionary, which has the form `name = value`
-  or the shorthand `name` (equivalent to `name = unit`).
--/
-partial def parseAttrDictEntry : AttrParserM (ByteArray × Attribute) := do
-  let name ← parseIdentifierOrStringLiteral
-  if ← parseOptionalPunctuation "=" then
-    let value ← parseAttribute
-    return (name, value)
-  else
-    return (name, UnitAttr.mk)
-
-/--
-  Parse an attribute dictionary, if present.
--/
-def parseOptionalAttributeDictionary : AttrParserM (Option (Std.HashMap ByteArray Attribute)) := do
-  let some array ← parseOptionalDelimitedList .braces parseAttrDictEntry
-    | return none
-  return some (Std.HashMap.ofArray array)
-
-/--
-  Parse an attribute dictionary, throwing an error if it is not present.
--/
-def parseAttributeDictionary (errorMsg : String := "attribute dictionary expected") :
-    AttrParserM (Std.HashMap ByteArray Attribute) := do
-  match ← parseOptionalAttributeDictionary with
-  | some dict => return dict
-  | none => throw errorMsg
 
 end Veir.AttrParser

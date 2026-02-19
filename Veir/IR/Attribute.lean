@@ -27,6 +27,13 @@ public import Veir.ForLean
 namespace Veir
 public section
 
+/--
+  We print `ByteArray`s as UTF-8 strings, as all the `ByteArray`s we are manipulating are
+  UTF-8 encoded strings.
+-/
+private local instance : Repr ByteArray where
+  reprPrec ba _ := repr (String.fromUTF8! ba)
+
 /-! ## Attribute definitions -/
 
 /--
@@ -82,6 +89,21 @@ structure FunctionType where
 deriving Inhabited, Repr, Hashable
 
 /--
+  A dictionary attribute that maps byte array keys to attribute values.
+-/
+structure DictionaryAttr where
+  /--
+    Entries are encoded as an array to allow decidable equality and iteration, which is
+    not possible with either a `HashMap` or an `ExtHashMap`.
+    Entries are expected to be sorted by key and each key is unique, so that we can use a
+    binary search and have O(log(n)) lookup time. This invariant is not enforced proof-wise but
+    is expected to be maintained at all time.
+  -/
+  entries : Array (ByteArray × Attribute)
+  /- TODO: figure out how to maintain a proof of sorted-ness and uniqueness. -/
+deriving Inhabited, Repr, Hashable
+
+/--
   A data structure that represents compile-time information in the IR.
   Attributes are used either as type annotations for SSA values, or
   as extra information stored in operations.
@@ -95,6 +117,8 @@ inductive Attribute
 | stringAttr (attr : StringAttr)
 /-- Unit attribute -/
 | unitAttr (attr : UnitAttr)
+/-- Dictionary attribute -/
+| dictionaryAttr (attr : DictionaryAttr)
 /-- Function type -/
 | functionType (type : FunctionType)
 /-- An attribute from an unknown dialect. -/
@@ -103,6 +127,13 @@ deriving Inhabited, Repr, Hashable
 
 end
 
+/--
+  Construct a `DictionaryAttr` from an array of key-value pairs.
+  TODO: ensure that entries are unique.
+-/
+def DictionaryAttr.fromArray (entries : Array (ByteArray × Attribute)) : DictionaryAttr :=
+  { entries := entries.insertionSort (fun entry1 entry2 => (compare entry1.1 entry2.1).isLT) }
+
 theorem FunctionType.sizeOf_elems_inputs {ft : FunctionType} (hx : x ∈ ft.inputs) :
     sizeOf x < sizeOf ft := by
   grind [Array.sizeOf_lt_of_mem hx, cases FunctionType]
@@ -110,6 +141,10 @@ theorem FunctionType.sizeOf_elems_inputs {ft : FunctionType} (hx : x ∈ ft.inpu
 theorem FunctionType.sizeOf_elems_outputs {ft : FunctionType} (hx : x ∈ ft.outputs) :
     sizeOf x < sizeOf ft := by
   grind [Array.sizeOf_lt_of_mem hx, cases FunctionType]
+
+theorem DictionaryAttr.sizeOf_elems_entries {da : DictionaryAttr} (hx : x ∈ da.entries) :
+    sizeOf x < sizeOf da := by
+  grind [Array.sizeOf_lt_of_mem hx, cases DictionaryAttr]
 
 /-!
   ## DecidableEq instances
@@ -134,6 +169,22 @@ decreasing_by
   · have := @FunctionType.sizeOf_elems_outputs
     grind
 
+def DictionaryAttr.decEq (dict1 dict2 : DictionaryAttr) : Decidable (dict1 = dict2) :=
+  let entries1 := dict1.entries
+  let entries2 := dict2.entries
+  match Array.instDecidabelEq' entries1 entries2 fun ⟨k₁, v₁⟩ ⟨k₂, v₂⟩ hx hy =>
+    if _ : k₁ = k₂ then
+      match v₁.decEq v₂ with
+      | isTrue _ => isTrue (by grind)
+      | isFalse _ => isFalse (by grind)
+    else isFalse (by grind)
+  with
+  | isTrue _ => isTrue (by grind [cases DictionaryAttr])
+  | isFalse _ => isFalse (by grind)
+termination_by sizeOf dict1
+decreasing_by
+  have := @DictionaryAttr.sizeOf_elems_entries
+  grind
 def Attribute.decEq (attr1 attr2 : Attribute) : Decidable (attr1 = attr2) := by
   cases h1 : attr1 <;> cases h2 : attr2
   case integerType.integerType type1 type2 =>
@@ -146,6 +197,10 @@ def Attribute.decEq (attr1 attr2 : Attribute) : Decidable (attr1 = attr2) := by
       | isFalse hEq => isFalse (by grind))
   case functionType.functionType type1 type2 =>
     exact (match FunctionType.decEq type1 type2 with
+      | isTrue hEq => isTrue (by grind)
+      | isFalse hEq => isFalse (by grind))
+  case dictionaryAttr.dictionaryAttr attr1 attr2 =>
+    exact (match DictionaryAttr.decEq attr1 attr2 with
       | isTrue hEq => isTrue (by grind)
       | isFalse hEq => isFalse (by grind))
   case integerAttr.integerAttr attr1 attr2 =>
@@ -166,6 +221,7 @@ end
 
 instance : DecidableEq Attribute := Attribute.decEq
 instance : DecidableEq FunctionType := FunctionType.decEq
+instance : DecidableEq DictionaryAttr := DictionaryAttr.decEq
 
 /-!
   ## ToString implementation
@@ -190,6 +246,23 @@ instance : ToString UnregisteredAttr where
   toString attr := attr.value
 
 mutual
+
+def DictionaryAttr.entryToString (entry : ByteArray × Attribute) : String :=
+  let key := String.fromUTF8! entry.1
+  match entry.2 with
+  | .unitAttr _ => key
+  | _ => s!"\"{key}\" = {Attribute.toString entry.2}"
+termination_by sizeOf entry
+decreasing_by grind
+
+def DictionaryAttr.toString (attr : DictionaryAttr) : String :=
+  let entries := attr.entries.toList.map DictionaryAttr.entryToString
+  s!"\{{String.intercalate ", " entries}}"
+termination_by sizeOf attr
+decreasing_by
+  rename_i entry _
+  have : entry ∈ attr.entries := by grind
+  grind [Array.sizeOf_lt_of_mem this, cases DictionaryAttr]
 
 def FunctionType.toString (type : FunctionType) : String :=
   let inputs := String.intercalate ", " (type.inputs.toList.map Attribute.toString)
@@ -222,6 +295,7 @@ def Attribute.toString (attr : Attribute) : String :=
   | .integerAttr attr => ToString.toString attr
   | .stringAttr attr => ToString.toString attr
   | .unitAttr attr => ToString.toString attr
+  | .dictionaryAttr attr => attr.toString
   | .unregisteredAttr attr => ToString.toString attr
   | .functionType type => type.toString
 termination_by sizeOf attr
@@ -233,6 +307,9 @@ instance : ToString Attribute where
 
 instance : ToString FunctionType where
   toString := FunctionType.toString
+
+instance : ToString DictionaryAttr where
+  toString := DictionaryAttr.toString
 
 /-!
   ## Coercion instances to Attribute
@@ -253,6 +330,9 @@ instance : Coe UnitAttr Attribute where
 
 instance : Coe UnregisteredAttr Attribute where
   coe attr := .unregisteredAttr attr
+
+instance : Coe DictionaryAttr Attribute where
+  coe attr := .dictionaryAttr attr
 
 instance : Coe FunctionType Attribute where
   coe type := .functionType type
@@ -276,6 +356,7 @@ def isType (attr : Attribute) : Bool :=
   | .integerAttr _ => false
   | .stringAttr _ => false
   | .unitAttr _ => false
+  | .dictionaryAttr _ => false
   | .unregisteredAttr attr => attr.isType
   | .functionType _ => true
 
