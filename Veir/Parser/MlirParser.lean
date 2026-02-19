@@ -3,6 +3,7 @@ import Veir.Parser.AttrParser
 import Veir.IR.Basic
 import Veir.Rewriter.InsertPoint
 import Veir.Rewriter.Basic
+import Veir.Rewriter.GetSetInBounds
 
 open Veir.Parser.Lexer
 open Veir.Parser
@@ -13,6 +14,7 @@ namespace Veir.Parser
 structure MlirParserState where
   /-- The current IR context. -/
   ctx : IRContext
+  hctx : ctx.FieldsInBounds
   /-- The values that have been defined at that point in the parser. -/
   values : Std.HashMap ByteArray ValuePtr
   /--
@@ -22,8 +24,8 @@ structure MlirParserState where
   -/
   blocks : Std.HashMap ByteArray (BlockPtr × Bool)
 
-def MlirParserState.fromContext (ctx : IRContext) : MlirParserState :=
-  {ctx := ctx, values := Std.HashMap.emptyWithCapacity 128, blocks := Std.HashMap.emptyWithCapacity 1}
+def MlirParserState.fromContext (ctx : IRContext) (hctx : ctx.FieldsInBounds := by grind) : MlirParserState :=
+  {ctx := ctx, hctx, values := Std.HashMap.emptyWithCapacity 128, blocks := Std.HashMap.emptyWithCapacity 1}
 
 abbrev MlirParserM := StateT MlirParserState (EStateM String ParserState)
 
@@ -50,8 +52,9 @@ def MlirParserM.run' (self : MlirParserM α)
 /--
   Get the current IR context that is stored in the parser state.
 -/
-def getContext : MlirParserM IRContext := do
-  return (← get).ctx
+def getContext : MlirParserM {ctx : IRContext // ctx.FieldsInBounds} := do
+  let st ← get
+  return ⟨st.ctx, st.hctx⟩
 
 /--
   Get a value that has previously been parsed given its name.
@@ -77,8 +80,8 @@ def registerValueDef (name : ByteArray) (value : ValuePtr) : MlirParserM Unit :=
   This should be called whenever any modifications have been made to the context
   outside of the parser monad.
 -/
-def setContext (ctx : IRContext) : MlirParserM Unit := do
-  modify fun s => {s with ctx := ctx}
+def setContext (ctx : IRContext) (hctx : ctx.FieldsInBounds := by grind) : MlirParserM Unit := do
+  modify fun s => {s with ctx, hctx}
 
 set_option warn.sorry false in
 /--
@@ -93,10 +96,11 @@ def defineBlock (name : ByteArray) (ip : BlockInsertPoint) : MlirParserM BlockPt
     throw s!"block %{String.fromUTF8! name} has already been defined"
   | some (block, false) => -- Block of this name was forward declared.
     /- Insert the block at the given location. -/
-    let ctx ← getContext
-    let some ctx := Rewriter.insertBlock? ctx block ip (by sorry) (by sorry) (by sorry)
-      | throw "internal error: failed to insert block"
-    setContext ctx
+    let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
+    match hctx' : Rewriter.insertBlock? ctx block ip (by sorry) (by sorry) h_ctx_FieldsInBound with
+    | none => throw "internal error: failed to insert block"
+    | some ctx' =>
+      setContext ctx'
     /- Notify the parsing context that the block is defined. -/
     modifyThe MlirParserState (fun state =>
     {state with
@@ -105,14 +109,15 @@ def defineBlock (name : ByteArray) (ip : BlockInsertPoint) : MlirParserM BlockPt
     return block
   | none => -- Block has not yet been declared or referenced.
     /- Create the block. -/
-    let ctx ← getContext
-    let some (ctx, block) := Rewriter.createBlock ctx ip (by sorry) (by sorry)
-      | throw "internal error: failed to create block"
-    setContext ctx
-    /- Notify the parsing context that the block is defined. -/
-    modifyThe MlirParserState fun s =>
-    {s with blocks := s.blocks.insert name (block, true)}
-    return block
+    let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
+    match hctx' : Rewriter.createBlock ctx ip h_ctx_FieldsInBound (by sorry) with
+    | none => throw "internal error: failed to create block"
+    | some (ctx', block) =>
+      setContext ctx
+      /- Notify the parsing context that the block is defined. -/
+      modifyThe MlirParserState fun s =>
+      {s with blocks := s.blocks.insert name (block, true)}
+      return block
 
 set_option warn.sorry false in
 /--
@@ -127,14 +132,15 @@ def defineBlockUse (name : ByteArray) : MlirParserM BlockPtr := do
     return block
   | none => -- Block not yet encountered
     /- Create the block. -/
-    let ctx ← getContext
-    let some (ctx, block) := Rewriter.createBlock ctx none (by sorry) (by sorry)
-      | throw "internal error: failed to create block"
-    setContext ctx
-    /- Notify the parsing context that the block is forward declared. -/
-    modifyThe MlirParserState fun s =>
-    {s with blocks := s.blocks.insert name (block, false)}
-    return block
+    let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
+    match hctx' : Rewriter.createBlock ctx none h_ctx_FieldsInBound (by sorry) with
+    | none => throw "internal error: failed to create block"
+    | some (ctx', block) =>
+      setContext ctx
+      /- Notify the parsing context that the block is forward declared. -/
+      modifyThe MlirParserState fun s =>
+      {s with blocks := s.blocks.insert name (block, false)}
+      return block
 
 /--
   Parse an operation result.
@@ -296,9 +302,9 @@ def parseOptionalBlockLabel (ip : BlockInsertPoint) : MlirParserM (Option BlockP
   let block ← defineBlock name ip
   /- Insert block arguments in the block. -/
   let blockArguments := arguments.mapIdx (fun index (_, type) => BlockArgument.mk (ValueImpl.mk type none) index () block)
-  let ctx ← getContext
-  let ctx := block.setArguments ctx blockArguments (by sorry)
-  setContext ctx
+  let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
+  let ctx' := block.setArguments ctx blockArguments (by sorry)
+  setContext ctx'
   /- Register the block argument names in the parser state. -/
   for ((argName, argType), index) in arguments.zipIdx do
     registerValueDef argName (ValuePtr.blockArgument {block := block, index := index})
