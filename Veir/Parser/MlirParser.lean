@@ -304,8 +304,148 @@ def parseOptionalBlockLabel (ip : BlockInsertPoint) : MlirParserM (Option BlockP
   let blockArguments := arguments.mapIdx (fun index (_, type) => BlockArgument.mk (ValueImpl.mk type none) index () block)
   let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
   let h_block_InBounds : block.InBounds ctx := by sorry
-  let ctx' := block.setArguments ctx blockArguments
-  setContext ctx' (by sorry)
+  let ctx' := block.setArguments ctx blockArguments h_block_InBounds
+  setContext ctx' (by
+    show (block.setArguments ctx blockArguments h_block_InBounds).FieldsInBounds
+    constructor
+    · -- TODO(gzgz): why can't grind solve this?
+      intro op opIn 
+      constructor
+      · intros res hres heq
+        constructor
+        · have hres_ctx : res.InBounds ctx := by
+            rw [BlockPtr.setArguments_opResultPtr_mono] at hres; exact hres
+          have h_maybe_ctx := OpResultPtr.firstUse!_inBounds h_ctx_FieldsInBound hres_ctx
+          have h_get_eq : res.get (block.setArguments ctx blockArguments h_block_InBounds)
+                            (by rw [BlockPtr.setArguments_opResultPtr_mono]; exact hres) =
+                          res.get ctx hres_ctx := by
+            simp [OpResultPtr.get, OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+          rw [h_get_eq]
+          rw [OpResultPtr.get!_eq_get hres_ctx] at h_maybe_ctx
+          intro z hz
+          rw [BlockPtr.setArguments_opOperandPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_maybe_ctx z hz
+        · -- owner_inBounds
+          have hres_ctx : res.InBounds ctx := by
+            rw [BlockPtr.setArguments_opResultPtr_mono] at hres; exact hres
+          have h_owner_ctx := OpResultPtr.owner!_inBounds h_ctx_FieldsInBound hres_ctx
+          simp only [OpResultPtr.get!_eq_get hres_ctx] at h_owner_ctx
+          have h_get_eq : res.get (block.setArguments ctx blockArguments h_block_InBounds)
+                            (by rw [BlockPtr.setArguments_opResultPtr_mono]; exact hres) =
+                          res.get ctx hres_ctx := by
+            simp [OpResultPtr.get, OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+          rw [h_get_eq]
+          rw [BlockPtr.setArguments_operationPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_owner_ctx
+      · -- prev_inBounds
+        have opIn_ctx : op.InBounds ctx := by
+          rw [BlockPtr.setArguments_operationPtr_mono] at opIn; exact opIn
+        have h_prev_ctx := OperationPtr.prev!_inBounds h_ctx_FieldsInBound opIn_ctx
+        simp only [OperationPtr.get!_eq_get opIn_ctx] at h_prev_ctx
+        have h_get_eq : op.get (block.setArguments ctx blockArguments h_block_InBounds) opIn =
+                        op.get ctx opIn_ctx := by
+          simp [OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+        rw [h_get_eq]
+        intro z hz
+        rw [BlockPtr.setArguments_operationPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        exact h_prev_ctx z hz
+      · -- next_inBounds
+        have opIn_ctx : op.InBounds ctx := by
+          rw [BlockPtr.setArguments_operationPtr_mono] at opIn; exact opIn
+        have h_next_ctx := OperationPtr.next!_inBounds h_ctx_FieldsInBound opIn_ctx
+        simp only [OperationPtr.get!_eq_get opIn_ctx] at h_next_ctx
+        have h_get_eq : op.get (block.setArguments ctx blockArguments h_block_InBounds) opIn =
+                        op.get ctx opIn_ctx := by
+          simp [OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+        rw [h_get_eq]
+        intro z hz
+        rw [BlockPtr.setArguments_operationPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        exact h_next_ctx z hz
+      · -- parent_inBounds
+        have opIn_ctx : op.InBounds ctx := by
+          rw [BlockPtr.setArguments_operationPtr_mono] at opIn; exact opIn
+        have h_parent_ctx := OperationPtr.parent!_inBounds h_ctx_FieldsInBound opIn_ctx
+        simp only [OperationPtr.get!_eq_get opIn_ctx] at h_parent_ctx
+        have h_get_eq : op.get (block.setArguments ctx blockArguments h_block_InBounds) opIn =
+                        op.get ctx opIn_ctx := by
+          simp [OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+        rw [h_get_eq]
+        intro z hz
+        rw [BlockPtr.setArguments_blockPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        exact h_parent_ctx z hz
+      · -- blockOperands_inBounds
+        intro operand hoperand heq
+        have opIn_ctx : op.InBounds ctx := by
+          rw [BlockPtr.setArguments_operationPtr_mono] at opIn; exact opIn
+        have hoperand_ctx : operand.InBounds ctx := by
+          rw [BlockPtr.setArguments_blockOperandPtr_mono] at hoperand; exact hoperand
+        have hFIB := h_ctx_FieldsInBound.operations_inBounds op opIn_ctx
+        have h_blockoperand := hFIB.blockOperands_inBounds operand hoperand_ctx heq
+        have h_get_eq : operand.get (block.setArguments ctx blockArguments h_block_InBounds) hoperand =
+                        operand.get ctx hoperand_ctx := by
+          simp [BlockOperandPtr.get, OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+        constructor
+        · rw [h_get_eq]; intro z hz
+          rw [BlockPtr.setArguments_blockOperandPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_blockoperand.nextUse_inBounds z hz
+        · rw [h_get_eq]
+          rw [BlockPtr.setArguments_blockOperandPtrPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_blockoperand.back_inBounds
+        · rw [h_get_eq]
+          rw [BlockPtr.setArguments_operationPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_blockoperand.owner_inBounds
+        · rw [h_get_eq]
+          rw [BlockPtr.setArguments_blockPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_blockoperand.value_inBounds
+      · -- regions_inBounds
+        intro i hi
+        have opIn_ctx : op.InBounds ctx := by
+          rw [BlockPtr.setArguments_operationPtr_mono] at opIn; exact opIn
+        rw [BlockPtr.setArguments_regionPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        grind [OperationPtr.getRegion, OperationPtr.getNumRegions, OperationPtr.get,
+               BlockPtr.setArguments, BlockPtr.set, IRContext.FieldsInBounds,
+               Operation.FieldsInBounds]
+      · -- operands_inBounds
+        intro operand hoperand heq
+        have opIn_ctx : op.InBounds ctx := by
+          rw [BlockPtr.setArguments_operationPtr_mono] at opIn; exact opIn
+        have hoperand_ctx : operand.InBounds ctx := by
+          rw [BlockPtr.setArguments_opOperandPtr_mono] at hoperand; exact hoperand
+        have hFIB := h_ctx_FieldsInBound.operations_inBounds op opIn_ctx
+        have h_operand := hFIB.operands_inBounds operand hoperand_ctx heq
+        have h_get_eq : operand.get (block.setArguments ctx blockArguments h_block_InBounds) hoperand =
+                        operand.get ctx hoperand_ctx := by
+          simp [OpOperandPtr.get, OperationPtr.get, BlockPtr.setArguments, BlockPtr.set]
+        constructor
+        · rw [h_get_eq]; intro z hz
+          rw [BlockPtr.setArguments_opOperandPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_operand.nextUse_inBounds z hz
+        · rw [h_get_eq]; sorry -- back_inBounds depends on BlockArgumentPtr properties
+        · rw [h_get_eq]
+          rw [BlockPtr.setArguments_operationPtr_mono h_block_InBounds (newArguments := blockArguments)]
+          exact h_operand.owner_inBounds
+        · rw [h_get_eq]; sorry -- value_inBounds depends on BlockArgumentPtr properties
+    · sorry -- blocks_inBounds (block related)
+    · -- regions_inBounds for IRContext
+      intro region regionIn
+      have regionIn_ctx : region.InBounds ctx := by
+        rw [BlockPtr.setArguments_regionPtr_mono] at regionIn; exact regionIn
+      have hFIB := h_ctx_FieldsInBound.regions_inBounds region regionIn_ctx
+      have h_get_eq : region.get (block.setArguments ctx blockArguments h_block_InBounds) regionIn =
+                      region.get ctx regionIn_ctx := by
+        simp [RegionPtr.get, BlockPtr.setArguments, BlockPtr.set]
+      rw [h_get_eq]
+      constructor
+      · intro blk hblk
+        rw [BlockPtr.setArguments_blockPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        exact hFIB.firstBlock_inBounds blk hblk
+      · intro blk hblk
+        rw [BlockPtr.setArguments_blockPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        exact hFIB.lastBlock_inBounds blk hblk
+      · intro parent hparent
+        rw [BlockPtr.setArguments_operationPtr_mono h_block_InBounds (newArguments := blockArguments)]
+        exact hFIB.parent_inBounds parent hparent
+    )
   /- Register the block argument names in the parser state. -/
   for ((argName, argType), index) in arguments.zipIdx do
     registerValueDef argName (ValuePtr.blockArgument {block := block, index := index})
