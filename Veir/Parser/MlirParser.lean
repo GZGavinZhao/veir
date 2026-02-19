@@ -303,8 +303,9 @@ def parseOptionalBlockLabel (ip : BlockInsertPoint) : MlirParserM (Option BlockP
   /- Insert block arguments in the block. -/
   let blockArguments := arguments.mapIdx (fun index (_, type) => BlockArgument.mk (ValueImpl.mk type none) index () block)
   let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
-  let ctx' := block.setArguments ctx blockArguments (by sorry)
-  setContext ctx'
+  let h_block_InBounds : block.InBounds ctx := by sorry
+  let ctx' := block.setArguments ctx blockArguments
+  setContext ctx' (by sorry)
   /- Register the block argument names in the parser state. -/
   for ((argName, argType), index) in arguments.zipIdx do
     registerValueDef argName (ValuePtr.blockArgument {block := block, index := index})
@@ -360,21 +361,26 @@ partial def parseOptionalOp (ip : Option InsertPoint) : MlirParserM (Option Oper
   let operands ← operands.zip inputTypes |>.mapM (fun (operand, type) => resolveOperand operand type)
 
   /- Set context in monad to default to preserve linearity whilst modifying -/
-  let ctx ← getContext
-  setContext Inhabited.default
+  let ⟨ctx, h_ctx_FieldsInBound⟩ ← getContext
+  setContext Inhabited.default (by
+    -- TODO(gzgz): extract into a separate theorem about `default` being
+    -- `FieldsInBound`
+    simp [default, instInhabitedIRContext.default]
+    constructor <;> simp [OperationPtr.InBounds, BlockPtr.InBounds, RegionPtr.InBounds])
 
-  let some (ctx, op) := Rewriter.createOp ctx opId outputTypes operands blockOperands regions properties ip (by sorry) (by sorry) (by sorry) (by sorry) (by sorry)
-      | throw "internal error: failed to create operation"
-  let ctx := op.setAttributes! ctx attrs
+  match hctx' : Rewriter.createOp ctx opId outputTypes operands blockOperands regions properties ip (by sorry) (by sorry) (by sorry) (by sorry) h_ctx_FieldsInBound with
+  | none => throw "internal error: failed to create operation"
+  | some (ctx', op) =>
+    let ctx'' := op.setAttributes ctx' attrs (by sorry)
 
-  /- Update the parser context. -/
-  setContext ctx
+    /- Update the parser context. -/
+    setContext ctx''
 
-  /- Register the new operation results in the parser state. -/
-  for index in 0...(op.getNumResults! ctx) do
-    let resultValue := op.getResult index
-    registerValueDef results[index]! resultValue
-  return op
+    /- Register the new operation results in the parser state. -/
+    for index in 0...(op.getNumResults! ctx') do
+      let resultValue := op.getResult index
+      registerValueDef results[index]! resultValue
+    return op
 
 /--
   Parse an operation.
@@ -394,32 +400,33 @@ partial def parseRegion : MlirParserM RegionPtr := do
   /- Create the region and parse the open delimiter. -/
   parsePunctuation "{"
   let ctx := ← getContext
-  let some (ctx, region) := Rewriter.createRegion ctx
-      | throw "internal error: failed to create region"
-  setContext ctx
+  match hctx' : Rewriter.createRegion ctx with
+  | none => throw "internal error: failed to create region"
+  | some (ctx', region) =>
+    setContext ctx'
 
-  /- Case where there are no blocks inside the region. -/
-  if (← parseOptionalPunctuation "}") then
+    /- Case where there are no blocks inside the region. -/
+    if (← parseOptionalPunctuation "}") then
+      return region
+
+    /- Parse the first block separately, as it may not have a label. -/
+    let _ ← parseEntryBlock (BlockInsertPoint.atEnd region)
+    /- Parse the following blocks. -/
+    while true do
+      if (← parseOptionalBlock (BlockInsertPoint.atEnd region)) = none then
+        break
+
+    /- Parse the closing delimiter. -/
+    parsePunctuation "}"
+
+    /- Check that all blocks in the regions that were forward declared were parsed. -/
+    for (blockName, (_, parsed)) in (← getThe MlirParserState).blocks do
+      if !parsed then
+        throw s!"block %{String.fromUTF8! blockName} was declared but not defined"
+
+    /- Restore the previous block parsing state. -/
+    modifyThe MlirParserState fun s => {s with blocks := oldBlocks}
     return region
-
-  /- Parse the first block separately, as it may not have a label. -/
-  let _ ← parseEntryBlock (BlockInsertPoint.atEnd region)
-  /- Parse the following blocks. -/
-  while true do
-    if (← parseOptionalBlock (BlockInsertPoint.atEnd region)) = none then
-      break
-
-  /- Parse the closing delimiter. -/
-  parsePunctuation "}"
-
-  /- Check that all blocks in the regions that were forward declared were parsed. -/
-  for (blockName, (_, parsed)) in (← getThe MlirParserState).blocks do
-    if !parsed then
-      throw s!"block %{String.fromUTF8! blockName} was declared but not defined"
-
-  /- Restore the previous block parsing state. -/
-  modifyThe MlirParserState fun s => {s with blocks := oldBlocks}
-  return region
 
 /--
   Parse the entry block and insert it into the given region.
